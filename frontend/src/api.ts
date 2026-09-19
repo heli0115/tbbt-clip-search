@@ -18,7 +18,7 @@ export type SearchResponse = {
   results: Clip[]
 }
 
-export async function searchClips(q: string, limit = 30): Promise<SearchResponse> {
+export async function searchClips(q: string, limit = 100): Promise<SearchResponse> {
   const params = new URLSearchParams({ q, limit: String(limit) })
   const response = await fetch(`/api/search?${params}`)
   if (!response.ok) {

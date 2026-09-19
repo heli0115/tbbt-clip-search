@@ -2,4 +2,25 @@
 
 html {
   color-scheme: light;
+  /* 防止 iOS 横屏或大字号设置下自动放大字体 */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  /* iPhone 底部小横条的安全区，避免内容被 Home 指示条遮住 */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 移动端点按体验：去掉点击时的高亮闪烁，消除双击缩放与 300ms 点击延迟 */
+button,
+a,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* 吸顶播放时不要被行内盒模型的基线间隙影响 */
+video {
+  display: block;
 }

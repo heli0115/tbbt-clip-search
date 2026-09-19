@@ -2,9 +2,14 @@
 
 索引策略（AGENTS.md 第 4 节）
 ----------------------------
-- 正文存在 `clips` 表；FTS5 表 `clips_fts` 以 external content 方式引用它，
-  不重复存文本；三个触发器保持两者同步。
-- tokenizer 用 `trigram`：中文无需分词即可做子串匹配。
+同时维护**两个** FTS5 索引，因为中英文的「匹配语义」要求不同：
+
+- `clips_fts`（tokenize=**trigram**）：中文无需分词即可**子串**匹配
+  （`狭缝` 能命中「有两个狭缝的平面」）。英文也一并索引，作为词匹配无果时的兜底。
+- `clips_fts_en`（tokenize=**unicode61**）：英文**按词**匹配。搜 `hi` 只命中独立的
+  "hi"，不会拉出一堆 `this` / `which` / `think`。
+
+两者都以 external content 方式引用 `clips`，并用触发器保持同步。
 
 已知限制（实测 SQLite 3.45.1）
 ------------------------------
@@ -76,6 +81,31 @@ CREATE TRIGGER IF NOT EXISTS clips_au AFTER UPDATE ON clips BEGIN
     INSERT INTO clips_fts(rowid, zh, en) VALUES (new.id, new.zh, new.en);
 END;
 
+-- 英文专用索引：unicode61 分词 → **按词**匹配。
+-- 搜 `hi` 只命中独立的 "hi"，不会命中 `this`（trigram 的子串语义做不到这点）。
+-- 中文路径仍走上面的 trigram，两者互不干扰。
+CREATE VIRTUAL TABLE IF NOT EXISTS clips_fts_en USING fts5(
+    en,
+    content='clips',
+    content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS clips_en_ai AFTER INSERT ON clips BEGIN
+    INSERT INTO clips_fts_en(rowid, en) VALUES (new.id, new.en);
+END;
+
+CREATE TRIGGER IF NOT EXISTS clips_en_ad AFTER DELETE ON clips BEGIN
+    INSERT INTO clips_fts_en(clips_fts_en, rowid, en)
+    VALUES ('delete', old.id, old.en);
+END;
+
+CREATE TRIGGER IF NOT EXISTS clips_en_au AFTER UPDATE ON clips BEGIN
+    INSERT INTO clips_fts_en(clips_fts_en, rowid, en)
+    VALUES ('delete', old.id, old.en);
+    INSERT INTO clips_fts_en(rowid, en) VALUES (new.id, new.en);
+END;
+
 -- 分享链接（M5）：token → 被选中的片段。
 -- 刻意冗余存下 zh/en：即使日后重导字幕导致 clips 变化，
 -- 已经发出去的分享链接内容也不会漂移。
@@ -89,6 +119,13 @@ CREATE TABLE IF NOT EXISTS shares (
     zh         TEXT NOT NULL DEFAULT '',
     en         TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 简单的键值元数据。目前只用来记录「英文索引是否已建」——
+-- 不能用 count(clips_fts_en) 判断，见 _ensure_en_index 的说明。
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -106,7 +143,34 @@ def connect(path: str | Path) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     """建表、建 FTS5 索引、建同步触发器（幂等，可重复调用）。"""
     conn.executescript(SCHEMA)
+    _ensure_en_index(conn)
     conn.commit()
+
+
+def _ensure_en_index(conn: sqlite3.Connection) -> None:
+    """英文索引尚未建好时，从 clips 重建一次。
+
+    ⚠️ **不能用 `count(*)` 判断索引是否为空**：`clips_fts_en` 以 external content
+    方式引用 `clips`，`SELECT count(*) FROM clips_fts_en` 返回的是 **clips 的行数**
+    而不是索引里的词条数 —— 一个完全空的索引也会报 117842，据此判断会永远跳过
+    rebuild（本项目真实踩过这个坑，表现为「英文搜索全部退化成子串匹配」）。
+
+    所以用一个显式的 meta 标记记录「已建过」。老库（没有该标记）首次用新代码
+    启动时会自动补齐索引，**不需要重新导入字幕，也不需要重新分发 tbbt.db**。
+    """
+    if count_clips(conn) == 0:
+        return
+
+    built = conn.execute(
+        "SELECT value FROM meta WHERE key = 'en_index_built'"
+    ).fetchone()
+    if built is not None:
+        return
+
+    conn.execute("INSERT INTO clips_fts_en(clips_fts_en) VALUES('rebuild')")
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('en_index_built', '1')"
+    )
 
 
 def insert_cues(
@@ -153,6 +217,44 @@ def _as_fts_phrase(query: str) -> str:
     return '"' + query.replace('"', '""') + '"'
 
 
+def _match(conn: sqlite3.Connection, table: str, keyword: str, limit: int) -> list[sqlite3.Row]:
+    """在指定 FTS5 表上做短语匹配（按相关度排序）；语法异常时返回空列表。
+
+    ⚠️ 这里**故意不用表别名**。实测 SQLite 3.45.1：写 `FROM clips_fts f ...
+    WHERE f MATCH ?` 会抛 `no such column: f` —— FTS5 的 MATCH 左操作数必须是
+    **表名本身**。
+
+    项目早期代码正是栽在这里：异常被 `except OperationalError: pass` 吞掉后，
+    每次搜索都静默降级成 `LIKE '%q%'` 全表扫描，于是「FTS5 索引」形同虚设
+    —— 既慢、又没有相关度排序（`ORDER BY rank` 从未生效）。
+    """
+    sql = f"""
+        SELECT {_CLIP_COLUMNS}
+        FROM {table}
+        JOIN clips c ON c.id = {table}.rowid
+        WHERE {table} MATCH ?
+        ORDER BY rank
+        LIMIT ?
+    """
+    try:
+        return conn.execute(sql, (_as_fts_phrase(keyword), limit)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
+def _match_like(conn: sqlite3.Connection, keyword: str, limit: int) -> list[sqlite3.Row]:
+    """全表子串扫描——只在 2 字符以下的中文查询时才需要。"""
+    pattern = f"%{keyword}%"
+    sql = f"""
+        SELECT {_CLIP_COLUMNS}
+        FROM clips c
+        WHERE c.zh LIKE ? OR c.en LIKE ?
+        ORDER BY c.season, c.episode, c.start_ms
+        LIMIT ?
+    """
+    return conn.execute(sql, (pattern, pattern, limit)).fetchall()
+
+
 def search(
     conn: sqlite3.Connection,
     query: str,
@@ -160,36 +262,34 @@ def search(
 ) -> list[sqlite3.Row]:
     """关键词搜索台词，返回 clips 行。
 
-    - 长度 >= 3：走 FTS5 trigram 索引（按相关度排序）
-    - 长度 < 3：trigram 匹配不到，降级为 LIKE 子串扫描
+    分流顺序：
+
+    1. **纯 ASCII（英文）** → 先按**词**匹配（`clips_fts_en`，unicode61）。
+       搜 `hi` 只会命中独立单词 "hi"，不会因为 `this` 里含 `hi` 就拉出来。
+    2. **词匹配无结果** → 退回**子串**匹配（`clips_fts`，trigram）。
+       这样 `phot` 这种「某个词的一部分」仍然能找到 `photon`。
+    3. **中文** → 直接走子串匹配；长度 < 3 时 trigram 无能为力
+       （`狭缝`、`ph` 都匹配不到），降级为 `LIKE '%q%'`。
+       这条兜底绝不能省，否则中文两字词会成为搜索盲区。
     """
     keyword = query.strip()
     if not keyword:
         return []
 
-    if len(keyword) >= MIN_FTS_QUERY_LEN:
-        fts_sql = f"""
-            SELECT {_CLIP_COLUMNS}
-            FROM clips_fts f
-            JOIN clips c ON c.id = f.rowid
-            WHERE f MATCH ?
-            ORDER BY rank
-            LIMIT ?
-        """
-        try:
-            return conn.execute(fts_sql, (_as_fts_phrase(keyword), limit)).fetchall()
-        except sqlite3.OperationalError:
-            pass  # FTS5 查询语法异常时落到 LIKE 兜底
+    # 1) 英文优先按词匹配
+    if keyword.isascii():
+        rows = _match(conn, "clips_fts_en", keyword, limit)
+        if rows:
+            return rows
 
-    pattern = f"%{keyword}%"
-    like_sql = f"""
-        SELECT {_CLIP_COLUMNS}
-        FROM clips c
-        WHERE c.zh LIKE ? OR c.en LIKE ?
-        ORDER BY c.season, c.episode, c.start_ms
-        LIMIT ?
-    """
-    return conn.execute(like_sql, (pattern, pattern, limit)).fetchall()
+    # 2) 子串匹配（中文主路径；也是英文词匹配无果时的兜底）
+    if len(keyword) >= MIN_FTS_QUERY_LEN:
+        rows = _match(conn, "clips_fts", keyword, limit)
+        if rows:
+            return rows
+
+    # 3) LIKE 兜底
+    return _match_like(conn, keyword, limit)
 
 
 def create_share(

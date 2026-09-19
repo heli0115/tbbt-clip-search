@@ -65,16 +65,46 @@
 
 ### 关键技术决策（不得随意替换）
 
-1. **索引**：SQLite FTS5 + `trigram` tokenizer。零运维、单文件、支持中文子串匹配。
+1. **索引**：SQLite FTS5，**两个索引分工**（中英文的匹配语义本就不同）：
+   - `clips_fts`（`tokenize=trigram`）：中文**子串**匹配（`狭缝` 命中「有两个狭缝的平面」），
+     同时兼作英文词匹配无果时的兜底。
+   - `clips_fts_en`（`tokenize=unicode61`）：英文**按词**匹配。搜 `hi` 只命中独立的 "hi"，
+     不会因为 `this` 里含 `hi` 就被拉出来。
+   - `search()` 分流：纯 ASCII 查询先走词匹配，**无结果再退回子串**（这样 `phot` 仍能找到 `photon`）。
+
+   ⚠️ **两个已踩过的坑（务必别改回去）**：
+   - **FTS5 的 `MATCH` 左操作数必须是表名本身，不能用别名**。写
+     `FROM clips_fts f ... WHERE f MATCH ?` 会抛 `no such column: f`；早期代码里这个异常被
+     `except OperationalError: pass` 吞掉，于是每次搜索都静默降级为 `LIKE '%q%'` 全表扫描
+     —— **索引从第一天起就没生效过**（既慢，`ORDER BY rank` 也从未起作用）。
+   - **不能用 `SELECT count(*) FROM clips_fts_en` 判断 external content 索引是否为空**：
+     它返回的是 `clips` 的行数（空索引也会报 117842），据此判断会永远跳过 `rebuild`。
+     改用 `meta` 表里的显式标记。
+
    ⚠️ 实测（SQLite 3.45.1）：trigram **只能匹配 >= 3 个字符**的查询——`光子`（2 汉字）、`ph` 都搜不到。
-   → 因此 `search()` 在查询长度 < 3 时**自动降级为 `LIKE '%q%'`**；这条兜底不可省，否则中文两字词成搜索盲区。
-2. **播放不切片**：`<video src="/v/S01E01.mp4#t=754.2,761.8">`（Media Fragment URI）。
-   ✅ **已实测验证**（真实 Chrome，脚本 `tools/verify_media_fragment.py`，4/4 通过）：
-   - 起点定位精确到毫秒：`#t=2.38` → `currentTime=2.380s`；`#t=754.2` → `754.200s`
-   - **end 语义浏览器原生遵守**：`#t=2.38,4.84` 播到 4.84s 自动 `paused=true` → 前端**无需**自写暂停逻辑
-   - ⚠️ **前提：静态服务必须支持 HTTP Range（206）**。实测 Python 自带 `http.server` **不支持**（返回 200 + 完整长度），会导致退化为全量下载。本地用 `tools/serve_range.py`；部署时确认对象存储/CDN 已开启 Range。
-   - ⚠️ 验证时页面必须停在**同源**地址：`about:blank` 的 origin 为 `null`，加载 http 媒体会被拒（表现为 media load failed）
-   M2–M3 完全不做服务端切片；仅在需要"保护整集不被整段浏览"时（M4+）才为分享片段做切片托管。
+   → 因此长度 < 3 时**自动降级为 `LIKE '%q%'`**；这条兜底不可省，否则中文两字词成搜索盲区。
+2. **播放不切片**：整集 mp4 + 前端定位，服务端不做任何切片。
+
+   ✅ **桌面浏览器**确实原生遵守 Media Fragment（真实 Chrome，`tools/verify_media_fragment.py` 4/4 通过）：
+   - 起点精确到毫秒：`#t=2.38` → `currentTime=2.380s`
+   - **end 原生遵守**：`#t=2.38,4.84` 播到 4.84s 自动 `paused=true`
+   - ⚠️ 前提是静态服务支持 **HTTP Range（206）**（R2 原生支持；`python -m http.server` 不支持）
+
+   ❌ **但移动端不能依赖它** —— 实测反馈：Android 真机上「有的从头播、有的从台词播」。
+   根因是**两套定位机制打架**：浏览器原生 seek 与 JS 设的 `currentTime` 时机不定，
+   谁先谁后不可预测。现行做法（见 `ClipPlayer.tsx`）：
+   - `src` 用**裸地址，不带 `#t=`**，定位**完全由 JS 控制** —— 单一机制才可预测
+   - 在 `loadedmetadata` / `loadeddata` / `canplay` / `timeupdate` **四个时机重试**定位；
+     `loadedmetadata` 那一刻 `seekable` 常常还没就绪，设 `currentTime` 会被**静默忽略**
+     （这正是「有的从头播」的来源）
+   - 自写 `timeupdate` → 到 `end_ms` 显式 `pause()`：**移动端没人替你遵守 end**
+   - 用 `useLayoutEffect` 显式 `play()`，**不靠 `autoPlay` 属性**：后者要等加载完才触发，
+     那时用户手势授权窗口已过期，会被自动播放策略拦下（Android 上尤其明显）
+   - `playsInline` 必须加，否则 iOS Safari 一点播放就强制全屏
+   - 复制分享链接：`navigator.clipboard` **只在安全上下文（HTTPS/localhost）可用**，
+     http 下必须退到 `execCommand('copy')`，再不行就给可一键全选的输入框
+
+   M2–M3 完全不做服务端切片；仅在需要「保护整集不被整段浏览」时（M4+）才为分享片段做切片托管。
 3. **时间单位统一为 `ms`**，数据库字段名必须为 `start_ms` / `end_ms`。
 4. **双语**：优先依赖"中英同一条字幕轨"。**只有在确认是分两条轨时**，才实现按时间轴重叠度对齐的逻辑。
 
@@ -215,6 +245,8 @@ ffprobe -v error -select_streams s \
 | M4 部署上线 | ✅ **已上线**：腾讯云轻量（境外）`<你的 VPS 公网 IP>`（Ubuntu 26.04 + Python 3.14）；nginx → uvicorn(2 workers) → `tbbt.db`；`http://<你的 VPS 公网 IP>/` 搜索与播放全通，`/v/` 返回 404（证明确实没反代视频） |
 | M5 分享链接 | ✅ 代码完成：`shares` 表 + `POST /api/share` + `GET /api/share/{token}` + 前端「分享这条台词」与 `/s/{token}` 分享页；⏳ 待实机验证 |
 | M5 卡片图 | ⏸ **明确延后**（用户决定：M5 的验收标准已由分享链接满足，上线后按实际分享场景再决定要不要） |
+| 搜索质量修复 | ✅ 英文改为**按词匹配**（搜 `hi` 不再匹到 `this`）；修复 **FTS5 别名 bug**（索引此前从未真正生效）；结果上限 30 → 100 |
+| 移动端体验 | ✅ 播放器吸顶（`deploy` 见 App.tsx 注释）、`playsInline` 修 iOS 强制全屏、输入框 16px 修 iOS 聚焦缩放、安全区适配、回到顶部按钮 |
 | M4 上传托管（视频） | ✅ **279 个 mp4 已全部上传到 R2 桶 `thebong`**（64.2 GB，上传 278 + 跳过 1，失败 0），逐文件大小比对一致；`r2.dev` 已实测 `Range → 206`。⚠️ 桶名是 `thebong`，不是 `tbbt-video`；endpoint 为 `https://<account_id>.r2.cloudflarestorage.com` |
 
 **已验证的事实（避免重复试错）**：

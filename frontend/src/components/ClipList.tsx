@@ -41,22 +41,27 @@ export function ClipList({ clips, active, keyword, onSelect }: Props) {
             <button
               type="button"
               onClick={() => onSelect(clip)}
-              className={`w-full cursor-pointer rounded-lg border p-3 text-left transition ${
+              /* p-4 与更大字号是为了移动端：触摸目标够大、正文不费眼 */
+              className={`w-full cursor-pointer rounded-xl border p-4 text-left transition ${
                 selected
                   ? 'border-sky-400 bg-sky-50 ring-1 ring-sky-300'
-                  : 'border-slate-200 bg-white hover:border-sky-300 hover:bg-slate-50'
+                  : 'border-slate-200 bg-white hover:border-sky-300 hover:bg-slate-50 active:bg-slate-100'
               }`}
             >
-              <div className="mb-1 flex items-center gap-2 font-mono text-xs text-slate-500">
+              <div className="mb-1.5 flex items-center gap-2 font-mono text-xs text-slate-500">
                 <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-700">
                   {episodeCode(clip)}
                 </span>
                 <span>{formatTimecode(clip.start_ms)}</span>
+                {selected && (
+                  <span className="ml-auto font-sans text-sky-600">▶ 播放中</span>
+                )}
               </div>
-              <p className="text-sm leading-relaxed text-slate-900">
+
+              <p className="text-[15px] leading-relaxed text-slate-900 sm:text-sm">
                 <Highlight text={clip.zh} keyword={keyword} />
               </p>
-              <p className="text-xs leading-relaxed text-slate-500">
+              <p className="mt-1 text-[13px] leading-relaxed text-slate-500 sm:text-xs">
                 <Highlight text={clip.en} keyword={keyword} />
               </p>
             </button>

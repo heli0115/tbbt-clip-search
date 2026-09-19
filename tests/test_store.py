@@ -233,3 +233,52 @@ def test_share_tokens_are_unique_and_unguessable_length(conn) -> None:
 
 def test_get_share_returns_none_for_unknown_token(conn) -> None:
     assert get_share(conn, "no-such-token") is None
+
+
+# ---------------------------------------------------------------------------
+# 英文按词匹配（unicode61）—— 搜 `hi` 不该命中 `this`
+# ---------------------------------------------------------------------------
+def test_english_matches_whole_words_only(conn) -> None:
+    """`hi` 只该命中独立单词，而不是 this / which / thin 里的子串。"""
+    cues = [
+        Cue(1, 0, 1000, "嗨", "Hi, Sheldon."),
+        Cue(2, 1000, 2000, "这是我的位置", "This is my spot."),
+        Cue(3, 2000, 3000, "哪一个", "Which one do you think?"),
+        Cue(4, 3000, 4000, "他很瘦", "He is thin."),
+    ]
+    insert_cues(conn, cues, season=1, episode=1)
+
+    rows = search(conn, "hi")
+    assert len(rows) == 1
+    assert rows[0]["en"].startswith("Hi")
+
+
+def test_english_falls_back_to_substring_when_no_word_match(conn) -> None:
+    """`phot` 不是完整单词 → 退回子串匹配，仍能找到 photon。"""
+    insert_cues(conn, CUES, season=1, episode=1)
+    rows = search(conn, "phot")
+    assert len(rows) == 1
+    assert "photon" in rows[0]["en"]
+
+
+def test_chinese_unaffected_by_word_matching(conn) -> None:
+    """中文仍走 trigram / LIKE 子串匹配：两字词照旧能搜到。"""
+    insert_cues(conn, CUES, season=1, episode=1)
+    assert len(search(conn, "狭缝")) == 3
+    assert len(search(conn, "光子打")) == 1
+
+
+def test_english_word_index_is_backfilled_for_old_db() -> None:
+    """老库（clips 有数据、英文索引为空）再 init_db 时应自动补齐索引。"""
+    conn = connect(":memory:")
+    init_db(conn)
+    insert_cues(conn, CUES, season=1, episode=1)
+
+    # 模拟「引入英文索引之前建的库」：索引被清空，但正文还在
+    conn.execute("INSERT INTO clips_fts_en(clips_fts_en) VALUES('delete-all')")
+    conn.commit()
+
+    init_db(conn)  # 再初始化一次 → 应触发 rebuild
+
+    assert len(search(conn, "photon")) == 1
+    conn.close()
