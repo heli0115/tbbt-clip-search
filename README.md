@@ -23,20 +23,22 @@
 
 ## 技术亮点
 
-### 1. 播片段不用切片 —— 靠 Media Fragment URI
+### 1. 播片段不切片 —— 整集 mp4 + 前端定位
 
-传统做法是每次播放都调 ffmpeg 实时切片，或者预生成成千上万个小文件。这里都不用：
+传统做法是每次播放都调 ffmpeg 实时切片，或者预生成成千上万个小文件。这里都不用：**整集 mp4 原样放着，前端把播放位置挪到那一句台词**。
 
-```html
-<video src="https://video.example.com/S01E01.mp4#t=754.2,761.8">
-```
+先试过 Media Fragment（`<video src="...#t=2.38,4.84">`）——那是浏览器原生语法，桌面 Chrome 实测确实好用：起点精确到毫秒（`#t=2.38` → `currentTime=2.380s`），**end 边界原生遵守**（播到 4.84s 自动 `paused=true`）。
 
-`#t=start,end` 是浏览器**原生支持**的媒体片段语法。实测结论（真实 Chrome）：
+但**移动端不能依赖它**：Android 真机上「有的从头播、有的从台词播」。根因是**两套定位机制打架**——浏览器原生 seek 与 JS 设的 `currentTime` 时机不定，谁先谁后不可预测。
 
-- 起点定位精确到毫秒（`#t=2.38` → `currentTime=2.380s`）
-- **end 边界浏览器原生遵守**：播到 4.84s 自动 `paused=true`，前端**不需要写任何暂停逻辑**
+所以播放器（`frontend/src/components/ClipPlayer.tsx`）最终**只保留一套机制**，把定位完全交给 JS：
 
-代价只有一个：静态服务必须支持 **HTTP Range（206）**。这一点在 Cloudflare R2 上原生满足，而 Python 自带的 `http.server` 不支持（所以仓库里有 `tools/serve_range.py` 用于本地验证）。
+- `src` 用**裸地址，不带 `#t=`**（单一机制才可预测）
+- 在 `loadedmetadata` / `loadeddata` / `canplay` / `timeupdate` **四个时机重试**把 `currentTime` 设到起点；`loadedmetadata` 那一刻 `seekable` 常常还没就绪，设了会被**静默忽略**（「有的从头播」就是这么来的）
+- 自写 `timeupdate` → 到 `end_ms` 显式 `pause()`：**移动端没人替你遵守 end**
+- 用 `useLayoutEffect` 显式 `play()` 而不是 `autoPlay` 属性：后者要等加载完才触发，那时用户手势授权窗口已过期，会被自动播放策略拦下（Android 上尤其明显）
+
+代价只有一个：静态服务必须支持 **HTTP Range（206）**（seek 依赖它）。这一点在 Cloudflare R2 上原生满足，而 Python 自带的 `http.server` 不支持（所以仓库里有 `tools/serve_range.py` 用于本地验证，`tools/verify_media_fragment.py` 用于真实浏览器验证）。
 
 ### 2. 中文搜索：FTS5 trigram + LIKE 降级
 
@@ -62,7 +64,7 @@ pattern = f"%{keyword}%"
 
 ```
 浏览器 ──┬─ /             → 小 VPS：nginx → uvicorn → SQLite
-         └─ video.<域名>  → Cloudflare R2（64 GB 视频，出网 $0）
+         └─ video.helilab.space  → Cloudflare R2（64 GB 视频，出网 $0）
 ```
 
 这样做的收益是双重的：**流量费恒为 0**，且**并发数不受服务器带宽限制**（2 核 2G 的小机器也能撑住）。
@@ -70,7 +72,7 @@ pattern = f"%{keyword}%"
 实现上只靠一个环境变量：
 
 ```bash
-TBBT_VIDEO_BASE=https://video.example.com   # 后端据此拼出 video 字段
+TBBT_VIDEO_BASE=https://video.helilab.space   # 后端据此拼出 video 字段
 ```
 
 本地开发时默认 `/v`（同源，走 FastAPI 自己的 Range 服务），线上切到 R2 域名 —— **同一份代码，两种形态**。
@@ -99,6 +101,19 @@ TBBT_VIDEO_BASE=https://video.example.com   # 后端据此拼出 video 字段
 
 对一个「读多写少 + 出网敏感」的视频站，R2 的免费出网是压倒性的。
 
+### 5. 界面：Netflix 风格的深色卡片网格
+
+深色底 `#141414` + 品牌红 `#E50914`，结果区是**卡片网格**。缩略图不是外部海报素材，而是**从视频里抽帧** —— 而且是**每条台词抽它自己起点的那一帧**：搜一次「photon」，10 张卡片就是 10 个不同画面（而不是同一集共用一张）。
+
+实测（S01E01 的 422 条真台词）：**0.11 秒/帧**、**7.2 KB/张**（320×180）。全剧 117,842 张**已生成完**：**826 MB**、**95 分钟**（`--workers 4`）、失败 0，逐季文件数与库内条数一致。走 R2 的 `cues/` 前缀，存储费约 $0.01/月。
+
+两个必须处理的坑：
+
+1. **片头照抽**：部分集数的演职员表是**叠加在正片画面上**的（不是独立片段，实测 S01E01 的叠加点在 31.9s / 38s / 46s），那几条台词会抽出带「starring Jim Parsons」字卡的画面 —— **刻意不过滤**，字卡也是真实画面。真想去掉可以加 `--intro-start/--intro-end`；被跳过的台词由前端 `<img onError>` 回退到该集封面（后端同时给 `cover` 与 `poster`）。
+2. **每集封面仍要亮度择优**（它是兜底图，也不能是黑场）：实测 S12E24 在 40% 处 YAVG 只有 **29.97**（夜戏），按 `(0.4, 0.25, 0.55, 0.7)` 依次试、抽到亮度 ≥ 45 就停即可解决。
+
+顺带验证了一件关键的事：**字幕时间轴与画面是同步的**（cue 19「Is this the high-iq sperm bank?」抽到的正是精子库前台）—— 不需要任何偏移补偿。
+
 ---
 
 ## 架构
@@ -116,10 +131,11 @@ TBBT_VIDEO_BASE=https://video.example.com   # 后端据此拼出 video 字段
 
 【服务层 · FastAPI】
   /api/health           健康检查
-  /api/search?q=&limit= 关键词 → 台词列表（含 video 字段）
+  /api/search?q=&limit= 关键词 → 台词列表（含 video / cover 字段）
   /api/share           生成分享 token
   /api/share/{token}   按 token 取片段
   /v/{file}            本地开发用，整集视频 + Range(206)
+  /v/covers/{file}     本地开发用，卡片封面 jpg
 
 【前端 · Vite + React + Tailwind】
   搜索框 → 结果列表（双语/剧集/时间码）→ 片段播放器 → 分享链接
@@ -141,13 +157,16 @@ pipeline/           数据管线
   store.py            SQLite + FTS5 索引，提供 search() / create_share()
   batch.py            按季批量：提取字幕 → 解析 → 入库（断点续跑）
   transcode.py        按季批量转码（720p/H.264/1.5Mbps 定案配方）
+  covers.py           按集抽帧生成兜底封面（亮度择优，原子写入）
+  cue_covers.py       按每条台词抽起点帧生成卡片缩略图（片头段跳过，并行）
   upload_r2.py        批量上传到 R2（断点续传 / 分片 / 并发）
 tools/
   serve_range.py      本地 Range(206) 静态服务
   verify_media_fragment.py  真实浏览器验证 Media Fragment 行为
+  verify_tailwind.mjs 离线验证 Tailwind 主题类是否生成
   pack_deploy.py      打包部署产物（只含 VPS 运行时需要的文件）
 deploy/             nginx.conf · tbbt-api.service · DEPLOY.md
-tests/              pytest（105 个测试）
+tests/              pytest（183 个测试）
 AGENTS.md           项目计划与所有关键决策的权威记录
 ```
 
@@ -169,12 +188,12 @@ npm run dev          # http://localhost:5173，已配 proxy → 127.0.0.1:8000
 
 前端 `/api`、`/v` 都通过 Vite proxy 代理到后端，**保持同源** —— 与生产形态一致，所以不需要任何 CORS 配置。
 
-> ⚠️ Windows 的 cmd 用户注意：`cd` 跨盘符要用 `cd /d "D:\..."`，否则当前盘不变、命令会找不到文件。
+> ⚠️ Windows 切目录要分 shell：**PowerShell** 用 `Set-Location "D:\..."`（写 cmd 的 `cd /d` 会报错、目录**不会**切换）；**cmd** 跨盘符则必须 `cd /d "D:\..."`，否则当前盘不变、命令找不到文件。
 
 ## 测试
 
 ```bash
-python -m pytest -q          # 105 passed
+python -m pytest -q          # 157 passed
 ```
 
 覆盖：字幕清洗规则、FTS5 与短查询降级、时间码不变量、API 契约、HTTP Range、分享 token 唯一性、上传续传判定。

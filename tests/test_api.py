@@ -82,6 +82,25 @@ def test_search_includes_playable_video_path(client) -> None:
     assert hit["video"] == "/v/S01E01.mp4"
 
 
+def test_search_includes_cover_url(client) -> None:
+    """卡片缩略图 = 这句台词起点那一帧（AGENTS.md 第 4 节决策 5）。"""
+    hit = client.get("/api/search", params={"q": "photon"}).json()["results"][0]
+    assert hit["cover"] == "/v/cues/S01E01_0001.jpg"
+
+
+def test_search_includes_poster_url(client) -> None:
+    """poster 是「该集封面」，只作兜底：片头段或抽帧失败时前端回退到它。"""
+    hit = client.get("/api/search", params={"q": "photon"}).json()["results"][0]
+    assert hit["poster"] == "/v/covers/S01E01.jpg"
+
+
+def test_search_cover_url_uses_configured_base(tmp_path) -> None:
+    """线上缩略图与视频走同一个 base（R2 的 cues/ 与 covers/ 前缀），只配一个环境变量。"""
+    hit = _search_first_hit(tmp_path, video_base="https://video.example.com")
+    assert hit["cover"] == "https://video.example.com/cues/S01E01_0001.jpg"
+    assert hit["poster"] == "https://video.example.com/covers/S01E01.jpg"
+
+
 def test_search_short_chinese_query_falls_back_to_like(client) -> None:
     """「狭缝」只有 2 个汉字，trigram 匹配不到，必须靠 LIKE 兜底。"""
     response = client.get("/api/search", params={"q": "狭缝"})
@@ -188,6 +207,8 @@ def test_share_roundtrip_returns_playable_clip(client) -> None:
     assert "光子" in body["zh"]
     assert "photon" in body["en"]
     assert body["video"] == "/v/S01E01.mp4"
+    assert body["cover"] == "/v/cues/S01E01_0001.jpg"
+    assert body["poster"] == "/v/covers/S01E01.jpg"
 
 
 def test_share_content_comes_from_server_not_client(client) -> None:
@@ -282,3 +303,93 @@ def test_video_missing_returns_404(tmp_path) -> None:
         response = test_client.get("/v/NOPE.mp4")
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /v/covers/{file}（每集封面）与 /v/cues/{file}（台词缩略图）
+# —— AGENTS.md 第 4 节决策 5
+# ---------------------------------------------------------------------------
+def test_cover_served_as_jpeg(tmp_path) -> None:
+    videos = tmp_path / "videos"
+    (videos / "covers").mkdir(parents=True)
+    (videos / "covers" / "S01E01.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    app = create_app(db_path=tmp_path / "empty.db", video_dir=videos)
+    with TestClient(app) as test_client:
+        response = test_client.get("/v/covers/S01E01.jpg")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content.startswith(b"\xff\xd8\xff")
+
+
+def test_cover_missing_returns_404(tmp_path) -> None:
+    videos = tmp_path / "videos"
+    videos.mkdir()
+
+    app = create_app(db_path=tmp_path / "empty.db", video_dir=videos)
+    with TestClient(app) as test_client:
+        assert test_client.get("/v/covers/S01E01.jpg").status_code == 404
+
+
+def test_cue_frame_served_as_jpeg(tmp_path) -> None:
+    videos = tmp_path / "videos"
+    (videos / "cues").mkdir(parents=True)
+    (videos / "cues" / "S01E01_0001.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    app = create_app(db_path=tmp_path / "empty.db", video_dir=videos)
+    with TestClient(app) as test_client:
+        response = test_client.get("/v/cues/S01E01_0001.jpg")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content.startswith(b"\xff\xd8\xff")
+
+
+def test_cue_frame_missing_returns_404(tmp_path) -> None:
+    """片头段的 cue 故意不生成图 —— 这时前端会回退到 poster。"""
+    videos = tmp_path / "videos"
+    videos.mkdir()
+
+    app = create_app(db_path=tmp_path / "empty.db", video_dir=videos)
+    with TestClient(app) as test_client:
+        assert test_client.get("/v/cues/S01E01_0011.jpg").status_code == 404
+
+
+def test_media_route_rejects_malformed_cue_index(tmp_path) -> None:
+    """序号必须是 4 位：不规范的路径一律当不存在，而不是去猜。"""
+    videos = tmp_path / "videos"
+    (videos / "cues").mkdir(parents=True)
+    (videos / "cues" / "S01E01_1.jpg").write_bytes(b"\xff\xd8\xff")
+
+    app = create_app(db_path=tmp_path / "empty.db", video_dir=videos)
+    with TestClient(app) as test_client:
+        for path in ["/v/cues/S01E01_1.jpg", "/v/cues/S01E01_00001.jpg", "/v/cues/S1E1_0001.jpg"]:
+            assert test_client.get(path).status_code == 404, path
+
+
+def test_media_route_rejects_unknown_subdirectory(tmp_path) -> None:
+    """只放行 covers/ 这一个子目录，其它子路径一律不服务。"""
+    videos = tmp_path / "videos"
+    (videos / "secret").mkdir(parents=True)
+    (videos / "secret" / "S01E01.mp4").write_bytes(b"x" * 10)
+
+    app = create_app(db_path=tmp_path / "empty.db", video_dir=videos)
+    with TestClient(app) as test_client:
+        assert test_client.get("/v/secret/S01E01.mp4").status_code == 404
+
+
+def test_media_route_rejects_path_traversal(tmp_path) -> None:
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    (tmp_path / "secret.txt").write_bytes(b"top secret")
+
+    app = create_app(db_path=tmp_path / "empty.db", video_dir=videos)
+    with TestClient(app) as test_client:
+        for path in [
+            "/v/..%2Fsecret.txt",
+            "/v/covers%2F..%2F..%2Fsecret.txt",
+            "/v/covers/S01E01.jpg%2F..%2F..%2Fsecret.txt",
+            "/v/cues%2F..%2F..%2Fsecret.txt",
+        ]:
+            assert test_client.get(path).status_code == 404, path

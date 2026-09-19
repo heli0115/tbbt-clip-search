@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -50,6 +51,16 @@ DEFAULT_VIDEO_DIR = Path(r"D:\study\生活大爆炸\视频素材\web")
 ENV_VIDEO_BASE = "TBBT_VIDEO_BASE"
 DEFAULT_VIDEO_BASE = "/v"
 
+# `/v/` 只服务这两类文件，其余一律 404。
+# 为什么用白名单而不是「只挡 ..」：路径穿越的写法层出不穷（编码斜杠、Windows 反斜杠、
+# 尾随空格…），与其逐条黑名单，不如只放行**确实存在的两种形态**：
+#   - 整集视频：`S01E01.mp4`
+#   - 每集封面：`covers/S01E01.jpg`
+#   - 台词缩略图：`cues/S01E01_0001.jpg`（AGENTS.md 第 4 节决策 5）
+_VIDEO_NAME_RE = re.compile(r"^S\d{2}E\d{2}\.mp4$")
+_COVER_NAME_RE = re.compile(r"^covers/S\d{2}E\d{2}\.jpg$")
+_CUE_NAME_RE = re.compile(r"^cues/S\d{2}E\d{2}_\d{4}\.jpg$")
+
 
 class ShareRequest(BaseModel):
     """创建分享的入参。
@@ -68,23 +79,46 @@ def _video_url(video_base: str, season: int, episode: int) -> str:
     return f"{video_base.rstrip('/')}/S{season:02d}E{episode:02d}.mp4"
 
 
+def _cover_url(video_base: str, season: int, episode: int) -> str:
+    """拼出该集封面图的 URL（`covers/S01E01.jpg`）。
+
+    与视频**共用同一个 base**：本地是 `/v`，线上是 R2 域名下的 `covers/` 前缀。
+    它只作**兜底**用（`poster` 字段）：片头段的台词没有自己的缩略图、
+    或某条缩略图抽帧失败时，前端回退到这张。
+    """
+    return f"{video_base.rstrip('/')}/covers/S{season:02d}E{episode:02d}.jpg"
+
+
+def _cue_cover_url(video_base: str, season: int, episode: int, cue_index: int) -> str:
+    """拼出**这一条台词**缩略图的 URL（`cues/S01E01_0001.jpg`）。
+
+    与 `pipeline/cue_covers.py` 的 `frame_path()` 必须保持一致 —— 那边生成
+    `S{季:02}E{集:02}_{序号:04}.jpg`，这边拼出同样的名字。
+    """
+    return f"{video_base.rstrip('/')}/cues/S{season:02d}E{episode:02d}_{cue_index:04d}.jpg"
+
+
 def _clip_to_hit(row, video_base: str) -> dict:
     """把 clips 行转成前端可直接使用的 JSON。
 
-    `video` + `start_ms`/`end_ms` 让前端无需额外请求即可拼出 Media Fragment：
-        f"{hit['video']}#t={hit['start_ms'] / 1000},{hit['end_ms'] / 1000}"
+    - `video` + `start_ms`/`end_ms`：前端无需额外请求即可定位片段
+    - `cover`：**这句台词**起点那一帧（卡片缩略图）
+    - `poster`：该集封面，仅作兜底（片头段/抽帧失败时用）
     """
     season = int(row["season"])
     episode = int(row["episode"])
+    cue_index = int(row["cue_index"])
     return {
         "season": season,
         "episode": episode,
-        "cue_index": int(row["cue_index"]),
+        "cue_index": cue_index,
         "start_ms": int(row["start_ms"]),
         "end_ms": int(row["end_ms"]),
         "zh": row["zh"],
         "en": row["en"],
         "video": _video_url(video_base, season, episode),
+        "cover": _cue_cover_url(video_base, season, episode, cue_index),
+        "poster": _cover_url(video_base, season, episode),
     }
 
 
@@ -195,17 +229,31 @@ def create_app(
 
         return _clip_to_hit(row, video_base)
 
-    @app.get("/v/{name}")
-    def video(name: str) -> FileResponse:
-        # 只接受裸文件名，挡住 ../ 与子路径形式的路径穿越
-        if name != Path(name).name or name in {".", ".."}:
-            raise HTTPException(status_code=404, detail="视频不存在")
+    @app.get("/v/{name:path}")
+    def media(name: str) -> FileResponse:
+        """服务整集视频与封面图。
+
+        `{name:path}` 是为了放行 `covers/xxx.jpg` 这种带一层子目录的路径；
+        安全性交给下面的**严格白名单正则**（只接受 `S01E01.mp4` 与
+        `covers/S01E01.jpg` 两种形态），比逐条挡 `..` 可靠得多。
+
+        视频必须支持 Range(206)：前端 seek 到片段起点全靠它。
+        """
+        if _VIDEO_NAME_RE.fullmatch(name):
+            media_type = "video/mp4"
+        elif _COVER_NAME_RE.fullmatch(name):
+            media_type = "image/jpeg"
+        elif _CUE_NAME_RE.fullmatch(name):
+            media_type = "image/jpeg"
+        else:
+            raise HTTPException(status_code=404, detail="资源不存在")
+
         path = video_dir / name
         if not path.is_file():
-            raise HTTPException(status_code=404, detail="视频不存在")
+            raise HTTPException(status_code=404, detail="资源不存在")
         return FileResponse(
             path,
-            media_type="video/mp4",
+            media_type=media_type,
             headers={"Accept-Ranges": "bytes"},
         )
 

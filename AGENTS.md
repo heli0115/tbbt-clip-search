@@ -17,8 +17,10 @@
 | 产品形态 | **公开网站：在线播放 + 链接分享** |
 | 素材来源 | **百度网盘**（视频内嵌字幕，需先分离字幕轨） |
 | 搜索精度 | **句子级**（SRT 时间轴直接定位，不做词级强制对齐） |
+| UI 风格 | **Netflix 风格深色**：底 `#141414` + 品牌红 `#E50914`；结果区为**卡片网格**，卡片带封面图 |
+| 卡片缩略图 | **每条台词抽起点那一帧**（320px jpg → `cues/S01E01_0001.jpg`），**片头也照抽、不做过滤**；不引入外部海报素材 |
 
-> 以上三项由用户明确选定。**任何一项要改变，必须先向用户确认。**
+> 以上决策由用户明确选定。**任何一项要改变，必须先向用户确认。**
 
 ## 3. 环境约束（实测）
 
@@ -52,15 +54,17 @@
 
 【服务层 · FastAPI】backend/main.py（契约见 tests/test_api.py，先测试后实现）
   /api/health          健康检查：{status, clips}
-  /api/search?q=&limit= 关键词 → 台词结果列表（每条含 video 字段供前端拼 Media Fragment）
+  /api/search?q=&limit= 关键词 → 台词结果列表（每条含 `video` 与 `cover` URL）
   /v/{file}            整集视频静态服务，**必须支持 Range(206)**
+  /v/covers/{file}     每集封面图（jpg，只作卡片兜底）
+  /v/cues/{file}       每条台词的起点缩略图（jpg，卡片主图）
   /clip/{ep}?t=a,b     （M4+）服务端切片播放
   /s/{token}           （M5）分享短链
 
-【前端 · Vite + React + Tailwind】
-  搜索框 → 结果列表（双语 / 剧集 / 时间码）→ 片段播放器 → 生成分享链接
+【前端 · Vite + React + Tailwind】（Netflix 风格深色皮肤）
+  搜索框 → 结果**卡片网格**（封面图 / 双语台词 / 剧集 / 时间码）→ 片段播放器 → 生成分享链接
 
-【托管】视频走 Cloudflare R2（出网流量免费）；服务与前端走香港轻量 VPS（免备案，见第 10 节）
+【托管】视频走 Cloudflare R2（出网流量免费）；服务与前端走腾讯云轻量 · 境外（东京，免备案，见第 10 节）
 ```
 
 ### 关键技术决策（不得随意替换）
@@ -108,6 +112,31 @@
 3. **时间单位统一为 `ms`**，数据库字段名必须为 `start_ms` / `end_ms`。
 4. **双语**：优先依赖"中英同一条字幕轨"。**只有在确认是分两条轨时**，才实现按时间轴重叠度对齐的逻辑。
 
+5. **卡片缩略图 = 每条台词的起点帧**（不引外部素材），两级结构：
+   - **主图**：`pipeline/cue_covers.py` 按 cue 起点抽帧 → `视频素材/web/cues/S01E01_0001.jpg`
+     （320px/q6，实测单张 **7.2 KB**、**0.11 s/帧**；全剧 117,842 张**已生成完毕**：**826.1 MB**、
+     **5685 s ≈ 95 分钟**（`--workers 4`），失败 0，且逐季文件数与库内条数完全一致）。
+     同一集的不同台词因此各有各的画面 —— 这正是「卡片不够 Netflix」的根因。
+   - **兜底**：`pipeline/covers.py` 按集抽一张 → `covers/S01E01.jpg`（640px）。只在**个别抽帧失败**
+     （或还没来得及生成）时用：后端同时给出 `cover`（本句）与 `poster`（该集）两个字段，前端
+     `<img onError>` 回退。
+
+   ✅ **字幕时间轴与画面是同步的**，不需要任何偏移补偿。抽样核对：S01E01 cue 19
+   「Is this the high-iq sperm bank?」(56.15s) 抽到的正是精子库前台，cue 20 是前台医生。
+
+   ✅ **片头照抽，不做过滤**（用户 2026-09-19 决定）：部分集数的片头是**演职员表叠加在正片画面上**
+   （不是独立片段），那几秒的 cue 会抽出「starring Jim Parsons」这种字卡 —— 实测 S01E01 的叠加点在
+   **31.9s / 38s / 46s**。刻意不过滤：字卡也是真实画面。若日后想跳过某段，用
+   `--intro-start 31000 --intro-end 47000`（两个都给出才生效；被跳过的 cue 由前端回退到 `poster`）。
+
+   ⚠️ **按集封面仍要「候选比例 + 亮度择优」**：它虽然降级成兜底图，也不能是黑场。实测 S12E24 在
+   40% 处 YAVG 只有 **29.97**（夜戏）、25% 处 69.46，所以按 `(0.4, 0.25, 0.55, 0.7)` 依次抽，
+   **抽到亮度 ≥ 45 就停**，都不达标取最亮的一张；亮度测量与抽帧合并成一次 ffmpeg 调用
+   （`signalstats,metadata=print:file=-` 是 pass-through 滤镜）。
+
+   两套图**共用同一个 base**（`TBBT_VIDEO_BASE`）：本地 `/v/cues/…` 与 `/v/covers/…`，
+   线上对应 R2 的 `cues/` 与 `covers/` 前缀对象。
+
 ### 转码配方（已定案，有实测依据）
 
 产物场景：**小窗口看片段**（学台词 / 找素材），非全屏观影。
@@ -142,10 +171,13 @@ VMAF 选型实测（S01E01，前 60 秒，各自目标分辨率）：
 | `pipeline/store.py` | 写入 SQLite + FTS5 索引，提供 `search()` |
 | `tools/serve_range.py` | 本地支持 Range(206) 的静态服务（`http.server` 做不到） |
 | `tools/verify_media_fragment.py` | 真实浏览器验证 Media Fragment 播放 |
+| `tools/verify_tailwind.mjs` | 离线验证 Tailwind 主题类是否生成（agent 会话里跑不了 Vite 时的样式自检） |
 | `pipeline/batch.py` | 按季批量：提取字幕 → 解析 → 入库（支持断点续跑） |
 | `pipeline/transcode.py` | 按季批量转码（720p/H.264/1.5Mbps 定案配方） |
-| `backend/main.py` | FastAPI 服务层：`/api/health` · `/api/search` · `/v/{file}`（Range 206） |
-| `frontend/` | Vite + React + Tailwind：搜索框 → 结果列表（双语 / 剧集 / 时间码）→ 片段播放器 |
+| `pipeline/covers.py` | 按集抽帧生成**该集封面**（候选比例 + 亮度择优 → 640px jpg，原子写入 + 断点续跑） |
+| `pipeline/cue_covers.py` | 按**每条台词**抽起点帧生成卡片缩略图（320px jpg；并行 + 断点续跑；可选 `--intro-start/--intro-end` 跳过区间） |
+| `backend/main.py` | FastAPI 服务层：`/api/health` · `/api/search` · `/v/{file}`（Range 206）· `/v/covers/{file}` |
+| `frontend/` | Vite + React + Tailwind（Netflix 风格深色）：搜索框 → 结果**卡片网格** → 片段播放器 → 分享 |
 | `pipeline/upload_r2.py` | 批量上传转码产物到 R2（断点续传 / 分片 / 并发 / 长缓存头） |
 | `deploy/` | `nginx.conf` · `tbbt-api.service` · `DEPLOY.md`（境外轻量 VPS 部署配置与手册） |
 | `tools/pack_deploy.py` | 打包部署产物（只含 VPS 运行时需要的 10 个文件，避免多传 / 漏传） |
@@ -232,21 +264,24 @@ ffprobe -v error -select_streams s \
 | `hdmv_pgs_subtitle` / `dvd_subtitle` | 图形软字幕 | ⚠️ 先导出 `.sup` 再 OCR |
 | 无字幕轨但画面有字幕 | 硬字幕 | ❌ 逐帧 OCR 或 ASR 转写 |
 
-## 9. 进度快照（2026-09-18）
+## 9. 进度快照（2026-09-18；2026-09-19 核对域名/HTTPS/R2）
 
 | 阶段 | 状态 |
 |---|---|
 | M0 环境准备 + 字幕轨诊断 | ✅ |
-| M1 字幕解析 + 清洗 + 入库 + FTS5 | ✅ **105 个测试通过** |
+| M1 字幕解析 + 清洗 + 入库 + FTS5 | ✅ **109 个测试通过**（M1 时为 105，M5 分享测试补齐后为 109） |
 | 全剧入库 | ✅ **12 季 279 集 / 117,842 条**（S01 7029 … S12 10214） |
 | 全剧转码 | ✅ **279 集 / 64.22 GB**，输出至 `视频素材/web/` |
 | M2 服务层（`backend/main.py`） | ✅ `/api/health` · `/api/search` · `/v/{file}`，Range 206 已用真实 HTTP 服务实测 |
 | M2 React 播放器（`frontend/`） | ✅ 完成，**用户实机验证通过**（搜 `狭缝` → 点开 → 2.38s 起播、4.84s 自动暂停） |
-| M4 部署上线 | ✅ **已上线**：腾讯云轻量（境外）`<你的 VPS 公网 IP>`（Ubuntu 26.04 + Python 3.14）；nginx → uvicorn(2 workers) → `tbbt.db`；`http://<你的 VPS 公网 IP>/` 搜索与播放全通，`/v/` 返回 404（证明确实没反代视频） |
-| M5 分享链接 | ✅ 代码完成：`shares` 表 + `POST /api/share` + `GET /api/share/{token}` + 前端「分享这条台词」与 `/s/{token}` 分享页；⏳ 待实机验证 |
+| M4 部署上线 | ✅ **已上线**：腾讯云轻量（境外）`<你的 VPS 公网 IP>`（Ubuntu 26.04 + Python 3.14）；nginx → uvicorn(2 workers) → `tbbt.db`；`http://<你的 VPS 公网 IP>/` 搜索与播放全通，`/v/` 返回 404（证明确实没反代视频）；**现已配域名与 HTTPS**——`https://helilab.space/` 搜索与播放全通，`http://` 一律 **301 → `https://`**（certbot），R2 自定义域名 `video.helilab.space` 已生效（实测 `Range: bytes=0-1023` → **206**，缺失对象 → 404） |
+| M5 分享链接 | ✅ 代码完成：`shares` 表 + `POST /api/share` + `GET /api/share/{token}` + 前端「分享这条台词」与 `/s/{token}` 分享页；`shares` 表已有 2 条真实记录（S09E09/cue9、S02E19/cue146）。⏳ **线上完整链路（点分享 → 复制链接 → 打开 `/s/{token}` 能播）尚未实机验证**——本机 curl 的 TLS 出站被 sandbox 拦，验不了 https |
 | M5 卡片图 | ⏸ **明确延后**（用户决定：M5 的验收标准已由分享链接满足，上线后按实际分享场景再决定要不要） |
 | 搜索质量修复 | ✅ 英文改为**按词匹配**（搜 `hi` 不再匹到 `this`）；修复 **FTS5 别名 bug**（索引此前从未真正生效）；结果上限 30 → 100 |
 | 移动端体验 | ✅ 播放器吸顶（`deploy` 见 App.tsx 注释）、`playsInline` 修 iOS 强制全屏、输入框 16px 修 iOS 聚焦缩放、安全区适配、回到顶部按钮 |
+| 播放器「播完再点播放」 | ✅ 修复：原实现**每次 `timeupdate`** 都判 `currentTime >= end_ms` 就 `pause()`，于是播完后再点播放会从末尾续播、并在下一次 timeupdate（约 250ms）被立刻按停 —— 用户看到的是「播一下就停」。现在改为**末尾只停一次**（`stoppedAtEnd` 标志），并在 `play` 事件里判断「已在末尾 → 跳回 `start_ms` 重播这一句」（`ClipPlayer.tsx` 的 `restartIfFinished`） |
+| UI 改版（Netflix 风格） | ✅ **已上线**：深色皮肤（`#141414` + 品牌红 `#E50914`，`index.css` 的 `@theme`）+ 结果**卡片网格** + 播放器「播完再点播放 = 重播本句」。配套：`pipeline/covers.py`、`tools/verify_tailwind.mjs`。线上实测：`/assets/index-0GMkNjtQ.js` 与本地 dist 一致 |
+| 卡片缩略图改为「按台词」 | ✅ **全量生成 + 上传 + 线上验证完毕**：`pipeline/cue_covers.py` 按 cue 起点抽帧 117,842 张（320px / 7.2 KB / 合计 826.1 MB / 95 分钟 / 失败 0，逐季与库内条数一致）；**片头照抽、不做过滤**（可选 `--intro-start/--intro-end`）。R2 上传 117,842 + 279（失败 0，**19.8 分钟**、实测 110 文件/秒）。线上实测：`cover`=`video.helilab.space/cues/S12E22_0084.jpg` → 200 `image/jpeg`；`poster`=`.../covers/S12E22.jpg` → 200；视频 `Range → 206` |
 | M4 上传托管（视频） | ✅ **279 个 mp4 已全部上传到 R2 桶 `thebong`**（64.2 GB，上传 278 + 跳过 1，失败 0），逐文件大小比对一致；`r2.dev` 已实测 `Range → 206`。⚠️ 桶名是 `thebong`，不是 `tbbt-video`；endpoint 为 `https://<account_id>.r2.cloudflarestorage.com` |
 
 **已验证的事实（避免重复试错）**：
@@ -259,22 +294,29 @@ ffprobe -v error -select_streams s \
   否则任务被中断会留下「存在但不完整」的 mp4，而 `transcode_season` 的存在性检查
   会把它误判为已完成并跳过（本项目真实踩过：S01E12 曾因此损坏）
 - ffmpeg 无法从 `.part` 扩展名推断容器格式，写临时文件时**必须显式 `-f mp4`**
+- ⚠️ **R2 凭据（`$env:R2_*`）是会话级的**：只在当前终端有效，**新开终端就丢**（本项目真实踩过：
+  跑缩略图上传时报「缺少桶名 / 缺少凭据环境变量」）。桶名 `thebong` 已写进 `upload_r2.DEFAULT_BUCKET`，
+  所以只需设 `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`；缺凭据时脚本会把
+  「缺哪几个 + 怎么设」直接打出来，不再只说一句「缺少桶名」。
+- ⚠️ **`set VAR=value` 是 cmd 语法**，PowerShell 里用 `$env:VAR = "value"`（DEPLOY.md 早期写错过一次）
 
 **前端依赖版本已定案（勿随意升级）**：
 
 - ❌ `vite@8`（rolldown 化）与 `@tailwindcss/vite` 不兼容：rolldown 打包 `vite.config.ts` 时无法处理 oxide 的 `.node`（`UNLOADABLE_DEPENDENCY ... stream did not contain valid UTF-8`），退化到 `--configLoader runner` 同样失败
 - ❌ `@vitejs/plugin-react@6` 的 peer 是 `vite: ^8.0.0` —— 降级 Vite 时必须**两者一起降**
 - ✅ 定案组合：`vite@^7.3.6` + `@vitejs/plugin-react@^5.2.0` + `tailwindcss@^4.3.3`（`@tailwindcss/vite` 插件）
+- ⚠️ **Tailwind v4 改过名的工具类**（老写法可能静默失效）：渐变用 `bg-linear-to-*`（不是 `bg-gradient-to-*`）；输入框占位色用 `placeholder:text-{color}`（v4 没有 `placeholder-{color}` 了）
+- ✅ **样式可以在 agent 会话里自检**：`node tools/verify_tailwind.mjs` 直接调 `@tailwindcss/node` 编译 `index.css`，再核对关键类有没有产出规则。注意候选类名必须**全文扫描字符串字面量**（Tailwind 就是这么扫的）——按 JSX 语法删掉 `${...}` 三元表达式会漏掉一半类名（本项目真实踩过）
 - npm 装包若报 `EPERM`（spawn），加 `--ignore-scripts` 即可（oxide / esbuild 都是预编译二进制，不需要构建脚本）
 - npm 官方源在国内极慢（4 分钟未完），改用 `--registry=https://registry.npmmirror.com` 后 **14 秒**装完
 
 **已评估并否决的托管平台（勿重复踩）**：
 
 - ❌ **Netlify / Cloudflare Pages 纯静态路线**：Netlify Functions 只支持 Node.js / Go，**跑不了 FastAPI**；
-  且 serverless 是无状态 + 临时文件系统，放不下 54 MB 的 `tbbt.db`。要走纯静态就必须把 11.8 万条台词
+  且 serverless 是无状态 + 临时文件系统，放不下约 56 MB 的 `tbbt.db`。要走纯静态就必须把 11.8 万条台词
   打包下发前端（gzip 约 1.5–2.5 MB）改做浏览器端搜索，代价是**丢掉服务端能力**（分享 token、限流、鉴权），
-  且 Netlify/Cloudflare 在大陆无节点，国内速度反而不如香港轻量。
-  **用户已明确选择保持香港轻量 → 方案 ③ 不变。**
+  且 Netlify/Cloudflare 在大陆无节点，国内速度反而不如境外轻量。
+  **用户已明确选择保持「境外轻量 + R2」路线 → 方案 ③ 不变。**
 
 **⚠️ 环境限制：agent 的 sandbox 拦截 node 的 `child_process`**
 
@@ -284,23 +326,29 @@ ffprobe -v error -select_streams s \
 
 ### 启动方式（本地开发）
 
-> ⚠️ **cmd.exe 跨盘符必须用 `cd /d`**：本工作区在 D 盘，而 cmd 的 `cd "D:\..."` 只改 D 盘自己的记录、
-> **不切换当前盘**（提示符仍是 `C:\...`），于是 `python -m backend.main` 报
-> `ModuleNotFoundError: No module named 'backend'`。PowerShell 的 `Set-Location` 没有这个问题。
+> ⚠️ **切换目录要分 shell 写对，否则表现是 `ModuleNotFoundError: No module named 'backend'`**
+>
+> - **PowerShell**（本项目实际使用的 shell）：用 `Set-Location "D:\..."` 或 `cd "D:\..."`。
+>   ❌ **不要写 cmd 的 `cd /d "D:\..."`** —— PowerShell 没有 `/d` 参数，会报
+>   `找不到接受自变量 'D:\...' 的位置参数`，**而目录根本没切换**。后果是后续 `python -m ...`
+>   报 `ModuleNotFoundError`、`npm run dev` 报 `Missing script: "dev"`（2026-09-19 真实踩过）。
+> - **cmd.exe**：跨盘符**必须** `cd /d "D:\..."`（只写 `cd "D:\..."` 只改 D 盘自己的记录、
+>   不切换当前盘，提示符仍是 `C:\...`）。
 
-```bash
+```powershell
 # 终端 1：后端（项目根目录）
-cd /d "D:\study\生活大爆炸\生活大爆炸"       # PowerShell 直接 cd "D:\study\..."
+Set-Location "D:\study\生活大爆炸\生活大爆炸"
 python -m backend.main --port 8000
 
 # 终端 2：前端
-cd /d "D:\study\生活大爆炸\生活大爆炸\frontend"
+Set-Location "D:\study\生活大爆炸\生活大爆炸\frontend"
 npm run dev          # http://localhost:5173，已配 proxy → 127.0.0.1:8000
 ```
 
 ## 10. 托管与部署方案（M4/M5 · 已定案）
 
 **决策**（用户选定）：**方案 ③ —— 服务与前端放境外轻量 VPS（东京/新加坡/香港均可），视频走 Cloudflare R2。**
+**实际选用**：腾讯云轻量 · 境外通用套餐 · **东京节点**（VPS 出口 IP 归属 AS132203 Tencent Cloud，东京）。
 
 选它而不是国内大陆方案的理由：**国内大陆服务器 + 域名对外服务必须 ICP 备案（7–20 工作日 + 实名）**，
 而实名会把版权风险直接落到个人（见下方「被否决的方案」）。境外节点 → **免备案**，且可用支付宝/微信付款。
@@ -308,7 +356,7 @@ npm run dev          # http://localhost:5173，已配 proxy → 127.0.0.1:8000
 > **选型实测**：腾讯云轻量的「境外通用套餐」（新加坡/东京/硅谷…）折扣后约 **30–33 元/月**，
 > 其中**东京**到国内延迟最低（约 50–80ms）。**不必执着香港**——视频在 R2 上，
 > 这台机器只扛 API（每次响应几 KB）+ 前端静态文件（约 200 KB），对带宽几乎无要求；
-> 实测其月流量消耗约 6 GB，而套餐含 0.5TB 流量包，用不到 1%。
+> 实测其月流量消耗约 6 GB，远低于套餐流量额度（用不到 1%）。
 > ⚠️ 买前要按**续费价**（而非首单折扣价）评估。
 
 ### 架构
@@ -317,7 +365,7 @@ npm run dev          # http://localhost:5173，已配 proxy → 127.0.0.1:8000
 浏览器
   ├─ / （Vite 产物）                        → 境外轻量 VPS：nginx 直接 serve
   ├─ /api/search · /api/health              → 同一台 VPS：nginx → uvicorn(FastAPI) → tbbt.db
-  └─ https://video.<域名>/S01E01.mp4#t=a,b   → Cloudflare R2（出网流量免费）
+  └─ https://video.helilab.space/S01E01.mp4   → Cloudflare R2（出网流量免费）
 ```
 
 **前端与 API 同源**（同一域名同一端口）→ **不需要任何 CORS 配置**，
@@ -325,25 +373,26 @@ npm run dev          # http://localhost:5173，已配 proxy → 127.0.0.1:8000
 
 ### 硬性约束（违反即失去方案的主要收益）
 
-1. **视频必须由浏览器直连 R2，禁止让 VPS 反代 `/v/*`**——否则香港轻量的 30 Mbps 峰值带宽
+1. **视频必须由浏览器直连 R2，禁止让 VPS 反代 `/v/*`**——否则这台轻量的峰值带宽
    立刻成为瓶颈，也白白浪费「R2 出网免费」。`deploy/nginx.conf` 里显式把 `/v/` 404 掉。
 2. `/api/search` 的 `video` 字段必须是**可配置的绝对 URL**：
    环境变量 `TBBT_VIDEO_BASE`（默认 `/v`，保持本地开发不变）。
-   本地 `→ /v/S01E01.mp4`；线上 `→ https://video.<域名>/S01E01.mp4`。
+   本地 `→ /v/S01E01.mp4`；线上 `→ https://video.helilab.space/S01E01.mp4`。
 3. `<video>` 跨源加载**不需要 CORS**（浏览器以 no-cors 模式发 Range 请求，不触发预检）。
    但 R2 桶需开启公共访问：优先绑定自定义域名，`r2.dev` 子域有限速、仅供测试。
-4. 媒体片段播放依赖 **Range(206)**：R2 原生支持，无需额外配置。
-5. 香港轻量**只放 `tbbt.db`（54 MB），不放视频**——磁盘与带宽都留给服务本身，
-   因此 40GB SSD 套餐足够（这正是选 ③ 而不是「香港轻量全包」的关键）。
+4. **seek 依赖 Range(206)**：R2 原生支持，无需额外配置（前端已不用 Media Fragment，见第 4 节；
+   但拖到任意位置仍以 206 为前提）。
+5. 这台轻量**只放 `tbbt.db`（约 56 MB），不放视频**——磁盘与带宽都留给服务本身，
+   因此 40GB SSD 套餐足够（这正是选 ③ 而不是「轻量全包」的关键）。
 
 ### 成本
 
 | 项目 | 量 | 费用 |
 |---|---|---|
-| 香港轻量 VPS | 2核2G / 40GB SSD / 30Mbps / 1TB-月 | 新用户 ≈¥24–60/月（原价约 2–3 倍）|
+| 腾讯云轻量 · 境外通用套餐（实际选用 · 东京）| 2核2G / 40GB SSD | 新用户 ≈¥24–60/月（原价约 2–3 倍）|
 | R2 存储 | 64.22 GB × $0.015/GB-月 | ≈ **$0.8/月** |
 | R2 出网流量 | 任意 | **$0** |
-| 域名 | .com 约 $10/年 | ≈ ¥6/月 |
+| 域名 | `helilab.space`（.space 约 $10/年）| ≈ ¥6/月 |
 
 ⚠️ 国内/香港云的共同特点：**新用户首年折扣极大，续费常翻 2–3 倍**，下单前按原价核算。
 
@@ -364,21 +413,36 @@ npm run dev          # http://localhost:5173，已配 proxy → 127.0.0.1:8000
 - [x] VPS 部署：`deploy/nginx.conf` + `deploy/tbbt-api.service`，只拷 `tbbt.db`
 - [x] 前端 `npm run build`，产物放到 VPS 的 `/var/www/tbbt`
 - [x] `robots.txt` 禁止索引（已随前端产物提供）
-- [ ] **注册域名**（Cloudflare Registrar，约 $10/年）
-- [ ] R2 桶绑定自定义域名 `video.<域名>`（替换 `r2.dev` —— 后者有限速，仅供测试）
-- [ ] 设置 `TBBT_VIDEO_BASE=https://video.<域名>` 并重启 `tbbt-api`
-- [ ] nginx `server_name` 改成域名
-- [ ] `certbot --nginx -d <域名>` 配 HTTPS
+- [x] **注册域名**：`helilab.space`（已解析到 VPS）
+- [x] R2 桶绑定自定义域名 `video.helilab.space`（替换 `r2.dev` —— 后者有限速，仅供测试）；已实测 `Range → 206`
+- [x] 设置 `TBBT_VIDEO_BASE=https://video.helilab.space` 并重启 `tbbt-api`
+- [x] nginx `server_name` 改成 `helilab.space`（IP 直连返回默认 404，证明确实只按域名 serve）
+- [x] `certbot --nginx -d helilab.space` 配 HTTPS（`http://` 现返回 **301 → `https://`**）
+
+> ✅ **后来已直接验证**（2026-09-19）：本机 `curl` 的 https 出站确实不通（连 `https://www.baidu.com` 都返回 `000`），
+> **但 Python 的 https 出站是通的** —— 用 `.venv\Scripts\python.exe` + `urllib`/`boto3` 可以直接请求
+> `https://helilab.space/api/search` 与 R2，所以线上状态不必再靠推断。
+>
+> ⚠️ **验证 R2 资源时必须带浏览器 UA**：`video.helilab.space` 前面是 Cloudflare，**默认 UA 会被浏览器完整性检查拦掉**，
+> 返回 `403 error code: 1010`（`text/plain`）—— 看起来像"权限/对象不存在"，其实只是 UA 被拦。
+> 实测：无 UA → 403；加 `-A "Mozilla/5.0 ..."` → **200**（新缩略图 `cf-cache MISS`、老视频 `HIT`）。
+> 这条差点让本项目误判成"R2 上传的图全挂了"。
+>
+> ```powershell
+> # 正确的探测方式（VPS 直连无 UA 要求；R2/Cloudflare 必须带 UA）
+> curl.exe -s "https://helilab.space/api/search?q=photon&limit=1"
+> curl.exe -s -A "Mozilla/5.0" -o NUL -w "%{http_code}`n" "https://video.helilab.space/cues/S01E01_0001.jpg"
+> ```
 
 ### 部署实录（2026-09-19 已上线）
 
 | 项 | 值 |
 |---|---|
-| VPS | 腾讯云轻量 · **境外** · `<你的 VPS 公网 IP>`（Ubuntu 26.04 LTS / Python 3.14.4 / 2核2G / 40GB）|
+| VPS | 腾讯云轻量 · **境外 · 东京**（AS132203）· `<你的 VPS 公网 IP>`（Ubuntu 26.04 LTS / Python 3.14.4 / 2核2G / 40GB）|
 | 部署路径 | `/opt/tbbt`，服务账号 `tbbt`，systemd 单元 `tbbt-api` |
 | 前端产物 | `/var/www/tbbt`（`www-data`），来源：本地 `npm run build` → `dist/` |
 | 传输方式 | `tools/pack_deploy.py` 生成 `deploy-bundle.tar.gz`（10 文件 / 28.9 MB）+ 前端 dist 包 |
-| 当前访问 | `http://<你的 VPS 公网 IP>/`（**尚未配域名与 HTTPS**）|
+| 当前访问 | `http://<你的 VPS 公网 IP>/`（现已配域名与 HTTPS：`https://helilab.space/`）|
 
 **这次实际踩到的坑**：
 
@@ -386,6 +450,6 @@ npm run dev          # http://localhost:5173，已配 proxy → 127.0.0.1:8000
    `Permission denied: '/opt/tbbt/.venv'`。
    解法：先 `sudo chown -R ubuntu:ubuntu /opt/tbbt` 装依赖，最后再 `chown -R tbbt:tbbt`。
 2. **cmd 的 `cd` 跨盘符不切换当前盘**（本项目在 D 盘）→ 在错误目录跑 `npm run build`，
-   报 `Missing script: "build"`。用 `cd /d "D:\..."`，或干脆用 PowerShell。
+   报 `Missing script: "build"`。切目录用 `Set-Location "D:\..."`（PowerShell）或 cmd 的 `cd /d "D:\..."`。
 3. **nginx `reload` 后立刻 curl 可能命中还持有旧配置的 worker**，拿到 404；重跑即正常。
 4. 腾讯云轻量的 Ubuntu 镜像**默认用户是 `ubuntu` 而非 root**，全程需要 `sudo`。

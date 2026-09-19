@@ -8,8 +8,12 @@ export type Clip = {
   end_ms: number
   zh: string
   en: string
-  /** 形如 `/v/S01E01.mp4`，供前端拼 Media Fragment */
+  /** 形如 `/v/S01E01.mp4`（本地）或 `https://video.<域名>/S01E01.mp4`（线上）；直接用作 `<video>` 的 src */
   video: string
+  /** 本句台词**起点那一帧**的缩略图，形如 `/v/cues/S01E01_0001.jpg` */
+  cover: string
+  /** 该集封面，形如 `/v/covers/S01E01.jpg`；仅作兜底（片头段/抽帧失败时用） */
+  poster: string
 }
 
 export type SearchResponse = {
@@ -41,16 +45,6 @@ export function formatTimecode(ms: number): string {
   const mm = String(minutes).padStart(hours > 0 ? 2 : 1, '0')
   const ss = String(seconds).padStart(2, '0')
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`
-}
-
-/**
- * Media Fragment URI：`/v/S01E01.mp4#t=2.38,4.84`。
- *
- * 起点精确到毫秒、end 由浏览器原生遵守（播到 4.84s 自动暂停），
- * 因此前端**无需**自写暂停逻辑。已实测，见 AGENTS.md 第 4 节。
- */
-export function fragmentSrc(clip: Clip): string {
-  return `${clip.video}#t=${clip.start_ms / 1000},${clip.end_ms / 1000}`
 }
 
 // ---------------------------------------------------------------------------
