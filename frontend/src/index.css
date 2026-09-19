@@ -1,12 +1,31 @@
 @import 'tailwindcss';
 
+/*
+  Netflix 风格主题（AGENTS.md 第 2 节「UI 风格」）。
+
+  用 @theme 定义语义色，而不是到处写 `bg-[#141414]`：
+  改一处就能整体换肤，也避免同一个黑出现三种写法。
+*/
+@theme {
+  --color-ink: #141414; /* 页面底色（Netflix 的 #141414） */
+  --color-panel: #181818; /* 卡片 / 面板 */
+  --color-panel-hover: #232323; /* 悬停态 */
+  --color-brand: #e50914; /* 品牌红 */
+  --color-brand-hover: #f40612;
+  --color-muted: #b3b3b3; /* 次要文字 */
+  --color-line: #2a2a2a; /* 分隔线 / 描边 */
+}
+
 html {
-  color-scheme: light;
+  /* 深色主题：让原生控件（视频控制条、滚动条、输入框）跟着变暗 */
+  color-scheme: dark;
   /* 防止 iOS 横屏或大字号设置下自动放大字体 */
   -webkit-text-size-adjust: 100%;
 }
 
 body {
+  background-color: var(--color-ink);
+  color: #fff;
   /* iPhone 底部小横条的安全区，避免内容被 Home 指示条遮住 */
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -23,4 +42,19 @@ select {
 /* 吸顶播放时不要被行内盒模型的基线间隙影响 */
 video {
   display: block;
+}
+
+/* 深色下的滚动条（Chrome/Edge/Safari 支持） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #3a3a3a;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
 }

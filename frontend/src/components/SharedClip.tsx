@@ -27,25 +27,29 @@ export function SharedClip({ token }: { token: string }) {
   }, [token])
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
+    <div className="min-h-screen bg-ink text-white">
+      <header className="border-b border-line bg-gradient-to-b from-black to-ink">
         <div className="mx-auto max-w-3xl px-4 py-5">
-          <h1 className="text-lg font-semibold">
-            生活大爆炸
-            <span className="ml-2 font-normal text-slate-400">分享的片段</span>
+          <h1 className="flex items-baseline gap-3">
+            <span className="text-2xl leading-none font-black tracking-tighter text-brand sm:text-3xl">
+              TBBT
+            </span>
+            <span className="text-sm font-medium text-white/85">
+              生活大爆炸 · 分享的片段
+            </span>
           </h1>
         </div>
       </header>
 
       <main className="mx-auto max-w-3xl px-4 py-6">
         {error !== null && (
-          <p className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <p className="rounded-md border border-brand/40 bg-brand/10 p-4 text-sm text-white">
             {error}
           </p>
         )}
 
         {error === null && clip === null && (
-          <p className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-400">
+          <p className="rounded-md border border-dashed border-line bg-panel/60 p-6 text-center text-sm text-muted">
             加载中…
           </p>
         )}
@@ -54,7 +58,10 @@ export function SharedClip({ token }: { token: string }) {
           <>
             <ClipPlayer clip={clip} />
             <p className="mt-6 text-center text-sm">
-              <a href="/" className="text-sky-600 hover:underline">
+              <a
+                href="/"
+                className="font-medium text-brand hover:text-brand-hover hover:underline"
+              >
                 去搜索更多台词 →
               </a>
             </p>

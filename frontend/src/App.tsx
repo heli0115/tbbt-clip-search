@@ -126,14 +126,19 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto max-w-6xl px-4 py-4 sm:py-5">
-          <h1 className="text-lg font-semibold">
-            生活大爆炸
-            <span className="ml-2 font-normal text-slate-400">台词搜索</span>
+    <div className="min-h-screen bg-ink text-white">
+      <header className="border-b border-line bg-linear-to-b from-black to-ink">
+        <div className="mx-auto max-w-6xl px-4 py-5 sm:py-6">
+          {/* Netflix 式标识：品牌红大字 + 一行说明 */}
+          <h1 className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="text-3xl leading-none font-black tracking-tighter text-brand sm:text-4xl">
+              TBBT
+            </span>
+            <span className="text-sm font-medium text-white/85 sm:text-base">
+              生活大爆炸 · 台词搜索
+            </span>
           </h1>
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-2 text-xs text-muted sm:text-sm">
             12 季 · 279 集 · 117,842 条台词 —— 搜到即可精确播放对应片段
           </p>
 
@@ -148,12 +153,12 @@ export default function App() {
               autoCapitalize="off"
               spellCheck={false}
               /* text-base(16px)：低于 16px 时 iOS Safari 聚焦会强制放大页面 */
-              className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2.5 text-base outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+              className="min-w-0 flex-1 rounded-md border border-line bg-panel px-3.5 py-2.5 text-base text-white outline-none transition placeholder:text-muted/60 focus:border-brand focus:ring-2 focus:ring-brand/25"
             />
             <button
               type="submit"
               disabled={loading || query.trim() === ''}
-              className="shrink-0 cursor-pointer rounded-lg bg-sky-600 px-5 py-2.5 text-base font-medium text-white transition hover:bg-sky-700 active:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="shrink-0 cursor-pointer rounded-md bg-brand px-6 py-2.5 text-base font-semibold text-white transition hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-white/40"
             >
               {loading ? '搜索中…' : '搜索'}
             </button>
@@ -172,7 +177,7 @@ export default function App() {
         section 的父容器是整个 <main>（播放器 + 长列表），才能一路粘住（实测 top = 0）。
       */}
       <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-4 lg:grid lg:grid-cols-[1fr_1.15fr] lg:items-start lg:gap-6 lg:py-6">
-        <section className="sticky top-0 z-10 order-1 min-w-0 bg-slate-50 pt-1 pb-3 lg:order-2 lg:top-6 lg:bg-transparent lg:pt-0 lg:pb-0">
+        <section className="sticky top-0 z-10 order-1 min-w-0 bg-ink pt-1 pb-3 lg:order-2 lg:top-6 lg:pt-0 lg:pb-0">
           <ClipPlayer clip={active} />
 
           {active !== null && (
@@ -181,20 +186,20 @@ export default function App() {
                 type="button"
                 onClick={handleShare}
                 disabled={sharing}
-                className="w-full cursor-pointer rounded-lg border border-sky-300 bg-white px-4 py-2.5 text-sm font-medium text-sky-700 transition hover:bg-sky-50 active:bg-sky-100 disabled:cursor-not-allowed disabled:text-slate-400"
+                className="w-full cursor-pointer rounded-md bg-brand px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-white/40"
               >
                 {sharing ? '生成分享链接…' : '分享这条台词'}
               </button>
 
               {shareNote !== null && (
-                <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+                <p className="mt-2 rounded-md bg-panel px-3 py-2 text-xs text-muted ring-1 ring-line">
                   {shareNote}
                 </p>
               )}
 
               {shareLink !== null && (
                 <div className="mt-2">
-                  <p className="mb-1 text-xs text-slate-500">
+                  <p className="mb-1 text-xs text-muted">
                     自动复制被浏览器拦下了，点一下全选再复制：
                   </p>
                   <input
@@ -202,7 +207,7 @@ export default function App() {
                     value={shareLink}
                     onFocus={(event) => event.currentTarget.select()}
                     onClick={(event) => event.currentTarget.select()}
-                    className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs break-all text-slate-700"
+                    className="w-full rounded-md border border-line bg-panel px-3 py-2 text-xs break-all text-white/90"
                   />
                 </div>
               )}
@@ -211,23 +216,23 @@ export default function App() {
         </section>
 
         <section className="order-2 min-w-0 lg:order-1">
-          <h2 className="mb-3 text-sm font-medium text-slate-600">
+          <h2 className="mb-3 flex items-baseline gap-2 text-sm font-semibold tracking-wide text-white/90 uppercase">
             搜索结果
             {searched && !loading && (
-              <span className="ml-2 font-normal text-slate-400">
+              <span className="font-mono text-xs font-normal text-muted normal-case">
                 {results.length} 条
               </span>
             )}
           </h2>
 
           {error !== null && (
-            <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <p className="rounded-md border border-brand/40 bg-brand/10 p-3 text-sm text-white">
               {error}
             </p>
           )}
 
           {error === null && !searched && (
-            <p className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-400">
+            <p className="rounded-md border border-dashed border-line bg-panel/60 p-6 text-center text-sm text-muted">
               输入关键词开始搜索。
               <br className="sm:hidden" />
               中文两字词（如「狭缝」）也能搜到。
@@ -235,7 +240,7 @@ export default function App() {
           )}
 
           {error === null && searched && results.length === 0 && (
-            <p className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-400">
+            <p className="rounded-md border border-dashed border-line bg-panel/60 p-6 text-center text-sm text-muted">
               没有找到包含「{keyword}」的台词
             </p>
           )}
@@ -260,7 +265,7 @@ export default function App() {
           type="button"
           onClick={handleBackToTop}
           aria-label="回到顶部并聚焦搜索框"
-          className="fixed right-4 bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-20 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full bg-slate-800/85 text-white shadow-lg backdrop-blur transition hover:bg-slate-800 active:scale-95"
+          className="fixed right-4 bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-20 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/20 backdrop-blur transition hover:bg-white/25 active:scale-95"
         >
           <svg
             width="20"

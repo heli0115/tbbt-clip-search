@@ -102,6 +102,7 @@ export function ClipPlayer({ clip }: { clip: Clip | null }) {
     // 挂监听时可能已经就绪了
     ensurePosition()
 
+    video.addEventListener('play', restartIfFinished)
     video.addEventListener('timeupdate', stopAtEnd)
 
     return () => {
@@ -109,13 +110,14 @@ export function ClipPlayer({ clip }: { clip: Clip | null }) {
       video.removeEventListener('loadeddata', ensurePosition)
       video.removeEventListener('canplay', ensurePosition)
       video.removeEventListener('timeupdate', ensurePosition)
+      video.removeEventListener('play', restartIfFinished)
       video.removeEventListener('timeupdate', stopAtEnd)
     }
   }, [clip])
 
   if (clip === null) {
     return (
-      <div className="flex aspect-video w-full items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 text-center text-sm text-slate-400">
+      <div className="flex aspect-video w-full items-center justify-center rounded-md border border-dashed border-line bg-panel px-6 text-center text-sm text-muted">
         选择一条台词，这里会播放对应片段
       </div>
     )
@@ -135,24 +137,24 @@ export function ClipPlayer({ clip }: { clip: Clip | null }) {
         controls
         playsInline
         preload="metadata"
-        className="aspect-video w-full rounded-xl bg-black shadow-sm"
+        className="aspect-video w-full rounded-md bg-black ring-1 ring-line"
       />
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-slate-500">
-          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-700">
+      <div className="rounded-md bg-panel p-4 ring-1 ring-line">
+        <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted">
+          <span className="rounded bg-brand px-1.5 py-0.5 font-medium text-white">
             {episodeCode(clip)}
           </span>
           <span>
             {formatTimecode(clip.start_ms)} – {formatTimecode(clip.end_ms)}
           </span>
-          <span className="text-slate-300">
+          <span className="text-white/30">
             # {clip.cue_index} · {((clip.end_ms - clip.start_ms) / 1000).toFixed(1)}s
           </span>
         </div>
 
-        <p className="text-base leading-relaxed text-slate-900">{clip.zh}</p>
-        <p className="mt-1.5 text-sm leading-relaxed text-slate-500 italic">
+        <p className="text-base leading-relaxed text-white">{clip.zh}</p>
+        <p className="mt-1.5 text-sm leading-relaxed text-muted italic">
           {clip.en}
         </p>
       </div>
