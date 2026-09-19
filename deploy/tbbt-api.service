@@ -1,0 +1,45 @@
+# TBBT 台词搜索 API —— systemd 单元
+#
+# 安装：
+#   sudo useradd -r -s /usr/sbin/nologin tbbt
+#   sudo mkdir -p /opt/tbbt && sudo chown tbbt:tbbt /opt/tbbt
+#   sudo cp deploy/tbbt-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tbbt-api
+#   journalctl -u tbbt-api -f                 # 看日志
+#
+# 部署不改代码：所有配置都从环境变量读（backend/main.py 的 create_app_from_env）。
+
+[Unit]
+Description=TBBT 台词搜索 API (FastAPI / uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tbbt
+Group=tbbt
+WorkingDirectory=/opt/tbbt
+
+# 视频不在本机：这里只写 R2 的自定义域名。
+# 后端把它拼进 /api/search 的 video 字段，浏览器据此**直连 R2**（AGENTS.md 第 10 节）。
+# 改成你自己的域名 —— 注意不要带尾斜杠。
+Environment=TBBT_VIDEO_BASE=https://video.example.com
+Environment=TBBT_DB=/opt/tbbt/tbbt.db
+
+ExecStart=/opt/tbbt/.venv/bin/uvicorn backend.main:create_app_from_env \
+    --factory --host 127.0.0.1 --port 8000 --workers 2
+
+Restart=always
+RestartSec=3
+
+# ---- 加固 ----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# SQLite 需要能写库文件所在的目录（WAL/日志）
+ReadWritePaths=/opt/tbbt
+
+[Install]
+WantedBy=multi-user.target

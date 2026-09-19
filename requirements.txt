@@ -1,0 +1,11 @@
+# VPS 运行时依赖（AGENTS.md 第 10 节）
+#
+# 装法（VPS 上，在项目目录内）：
+#     python3 -m venv .venv
+#     .venv/bin/pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 说明：数据管线（pipeline/）与测试只依赖标准库，不需要装在这里；
+# 上传脚本要的 boto3 也只在本机跑，VPS 上用不到。
+
+fastapi>=0.115
+uvicorn[standard]>=0.30

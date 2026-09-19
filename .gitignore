@@ -1,0 +1,43 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# ---- Node（M2 前端用）----
+node_modules/
+dist/
+
+# ---- 工具与素材 ----
+.reasonix/
+# 视频素材与转码产物（数十 GB 级，绝不入库）
+*.mkv
+*.mp4
+*.webm
+*.sup
+# 管线产物
+*.clips.json
+*.db
+
+# 部署包（内含 tbbt.db，几十 MB，不入库）
+deploy-bundle.tar.gz
+
+# ---- 字幕文件（受版权保护，绝不上传）----
+# 279 个字幕 + 样片都属于影视作品衍生内容，只应存在于本地。
+# 想重建索引的人需自备素材（见 README「版权声明」）。
+*.srt
+subtitles/
+samples/
+
+# 会话归档（1.6 MB 的原始转录备份）
+.archive/
+
+# ---- 开发会话记录（绝不入库）----
+# 这些 md 是与 AI 的完整对话转录：体积大（1.6 MB）、与项目无关，
+# 且**可能包含临时贴出的凭据**（如云存储的 Access Key / Secret）。
+生活大爆炸 - *.md
+*.md.bak
+
+# 本地 AI 工具配置（含本机绝对路径）
+reasonix.toml
