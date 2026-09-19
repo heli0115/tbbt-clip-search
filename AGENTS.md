@@ -24,12 +24,16 @@
 
 ## 3. 环境约束（实测）
 
-- OS：Windows；shell 为 bash（git bash）
+- OS：Windows；**shell 是 PowerShell**（7.x）—— 命令示例一律按 PowerShell 写（`Set-Location` 而非 cmd 的 `cd /d`，见第 9 节）
 - ✅ node v24.15.0 / npm 11.12.1 / pnpm 11.24.0
 - ✅ Python 3.12.3 / pip 26.2.1
 - ✅ **ffmpeg / ffprobe / ffplay 已就绪**：`D:\ffmpeg\bin`（`2026-09-17-git-7070fe638e-essentials_build`），已加入**用户 PATH**（新开终端生效）
 - ✅ **NVIDIA NVENC 硬件编码可用**（`h264_nvenc` / `hevc_nvenc`，RTX 4060 Laptop）→ M4 转码走硬件加速，不必纯 CPU 慢转
-- ❌ **`github.com` 不可达**（`curl` 返回 `000`）→ 任何走 GitHub Releases 的安装都会失败（如 `winget install Gyan.FFmpeg`）；Python 依赖请走国内镜像 `https://pypi.tuna.tsinghua.edu.cn/simple`
+- ❌ **`github.com:443` 时通时不通** → 任何走 GitHub Releases 的安装都会失败（如 `winget install Gyan.FFmpeg`）；Python 依赖请走国内镜像 `https://pypi.tuna.tsinghua.edu.cn/simple`
+  - ✅ **推代码有办法**（2026-09-19 实测）：本机有代理在 `127.0.0.1:7897`（Clash）监听，用**临时参数**走它即可，
+    不改全局配置：`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push`
+    （上午 11:42 还能直推、下午就不通 —— 属于网络波动，不是配置问题）
+  - 备选：`ssh.github.com:443` 是通的（SSH-over-443；`gitee.com`、`codeload.github.com` 也通，只有主域 `github.com:443` 被卡）
 - ⚠️ **D 盘仅剩 174G**（总计 752G，已用 579G）→ 必须**按季流水线**处理：下载一季 → 提取字幕 + 转码压缩 → 删除源文件 → 下一季
 - 工作区根：`D:\study\生活大爆炸\生活大爆炸`
 
