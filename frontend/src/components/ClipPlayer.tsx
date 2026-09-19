@@ -14,8 +14,12 @@ import { episodeCode, formatTimecode } from '../api'
  * 另外不能只在 `loadedmetadata` 里 seek：那一刻 `seekable` 范围常常还没就绪
  * （Android 尤其明显），设置 `currentTime` 会被静默忽略。所以在多个时机重试，
  * 并以「已经落在起点之后」作为收敛条件。
+ *
+ * 末尾行为：播到 `end_ms` 自动暂停；**再点播放 = 重播这一句**（见 `restartIfFinished`）。
  */
 const SEEK_TOLERANCE_S = 0.2
+/** 判定「已经在末尾」的容差：`timeupdate` 粒度约 250ms，精确等于 endSec 不可靠 */
+const END_TOLERANCE_S = 0.25
 
 export function ClipPlayer({ clip }: { clip: Clip | null }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -49,6 +53,10 @@ export function ClipPlayer({ clip }: { clip: Clip | null }) {
 
     // 已经落在起点（或之后）就收工，避免和用户手动拖动打架
     let settled = false
+    // 本段是否已经「在末尾停过一次」。
+    // ⚠️ 没这个标志就会踩坑：`stopAtEnd` 每次 timeupdate 都跑，于是播完后再点播放，
+    // 视频从末尾继续 → 下一次 timeupdate 立刻又 pause（用户看到的是「播一下就停」）。
+    let stoppedAtEnd = false
 
     function ensurePosition() {
       if (video === null || settled || video.readyState < 1) return
@@ -61,8 +69,28 @@ export function ClipPlayer({ clip }: { clip: Clip | null }) {
 
     function stopAtEnd() {
       if (video === null) return
-      if (video.currentTime >= endSec) {
-        video.pause()
+      if (video.currentTime < endSec) {
+        // 离开末尾区间（例如把进度条拖回前面）→ 允许下次再停一次
+        stoppedAtEnd = false
+        return
+      }
+      if (stoppedAtEnd) return
+      stoppedAtEnd = true
+      video.pause()
+    }
+
+    /**
+     * 播完（或拖到末尾）之后再点播放 → **重播这一句**。
+     *
+     * 这是「学台词」场景里最自然的行为：用户点播放是想再听一遍这句，
+     * 而不是从这个片段的末尾继续往后跑。顺带也修掉了上面注释里那个「播一下就停」。
+     */
+    function restartIfFinished() {
+      if (video === null) return
+      if (video.currentTime >= endSec - END_TOLERANCE_S) {
+        video.currentTime = startSec
+        settled = true
+        stoppedAtEnd = false
       }
     }
 
